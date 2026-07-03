@@ -9156,5 +9156,238 @@ const DSval = (function(){
 })();
 
 </script>
+
+<script>
+/* ============================================================
+   SUITE AT HOME . DICTADO ANIMADO . FASE B-PRO . r1 (paraClase)
+   ------------------------------------------------------------
+   Porte del bloque FASE B r2 del elemental. Se activa SOLO al
+   llegar desde el Diario del Profesor con
+     ?paraClase=1&curso=2Gp&anio=2026&semana=27&numero=1
+
+   Que hace:
+     . banner dorado fijo arriba con el encargo (curso/semana/n)
+     . autoselecciona el curso equivalente de la app (2Gp -> gp2)
+     . anade en la barra de Edicion el boton
+       "Cargar dictado animado para clase" que:
+         1) toma el dictado actual (sanitiza midis + guarda bpm)
+         2) renderiza la SOLUCION a JPG (titulo + partitura)
+         3) la sube al bucket 'diario' (x-upsert, prefijo semanas/)
+         4) upsert en suite_dictados_clase (curso, anio, semana)
+         5) escribe dictado_path/filename/mime + n en la fila
+            semanas del Diario
+   ============================================================ */
+(function(){
+  'use strict';
+  var P = new URLSearchParams(location.search);
+  if(P.get('paraClase')!=='1') return;
+
+  var cursoDiario = P.get('curso')||'';
+  var anio   = parseInt(P.get('anio'),10);
+  var semana = parseInt(P.get('semana'),10);
+  var numero = parseInt(P.get('numero'),10);
+  var m = cursoDiario.match(/^([1-2])Gp$/i);
+  var cursoApp = m ? ('gp'+m[1]) : null;
+  var cursoLbl = m ? (m[1]+'\u00ba GP') : cursoDiario;
+  if(!cursoApp || !isFinite(anio) || !isFinite(semana)){ return; }
+  window.PARA_CLASE = { cursoDiario:cursoDiario, cursoApp:cursoApp, anio:anio, semana:semana, numero:numero };
+
+  var SB_URL  = (typeof SUPA_URL !=='undefined') ? SUPA_URL  : 'https://woiptkyrxkbpnvioypit.supabase.co';
+  var SB_ANON = (typeof SUPA_ANON!=='undefined') ? SUPA_ANON : '';
+  function _hdr(extra){
+    var h={ 'apikey':SB_ANON, 'Authorization':'Bearer '+SB_ANON };
+    if(extra) for(var k in extra) h[k]=extra[k];
+    return h;
+  }
+
+  /* ---- banner fijo del modo clase (dorado, estetica PRO) ------------ */
+  var estadoEl=null;
+  function banner(){
+    if(document.getElementById('paraClaseBar')) return;
+    var d=document.createElement('div');
+    d.id='paraClaseBar';
+    d.style.cssText='position:fixed;top:0;left:0;right:0;z-index:400;display:flex;align-items:center;gap:12px;'+
+      'padding:9px 16px;background:linear-gradient(90deg,#8a6508,#b8860b 55%,#d4af37);color:#fff;'+
+      'font-weight:700;font-size:13.5px;box-shadow:0 4px 18px rgba(0,0,0,.35)';
+    d.innerHTML='<span>\ud83c\udfac Modo clase</span>'+
+      '<span style="opacity:.92;font-weight:600">Dictado n\u00ba '+numero+' \u00b7 '+cursoLbl+' \u00b7 semana '+semana+'/'+anio+
+      ' \u2014 crea el dictado en Edici\u00f3n y pulsa \u00abCargar dictado animado para clase\u00bb</span>'+
+      '<span id="paraClaseEstado" style="margin-left:auto;font-weight:800"></span>';
+    document.body.appendChild(d);
+    document.body.style.paddingTop='42px';
+    estadoEl=document.getElementById('paraClaseEstado');
+  }
+  function estado(msg, color){
+    if(estadoEl){ estadoEl.textContent=msg||''; estadoEl.style.color=color||'#fff'; }
+  }
+
+  /* ---- arranque directo en modo clase ------------------------------- */
+  var triesAuto=0;
+  function autoCurso(){
+    var listo = window.DS && DS.courses && DS.courses.setActiveCourse &&
+                window.DSedit && window.DSgen;
+    if(!listo){ if(++triesAuto<80) setTimeout(autoCurso, 250); return; }
+    try{
+      DS.courses.setActiveCourse(cursoApp);
+      try{ DS.courses.buildFloating(); }catch(e){}
+    }catch(e){}
+    var t0=Date.now();
+    (function vigila(){
+      try{ DS.courses.closeGate(); }catch(e){}
+      var g=document.getElementById('courseGate');
+      if(g) g.style.display='none';
+      if(Date.now()-t0<8000) setTimeout(vigila, 300);
+    })();
+    setTimeout(function(){
+      try{ DSedit.enter(); }
+      catch(e){ console.warn('[paraClase] no pude abrir el editor:', e); return; }
+      fetch(SB_URL+'/rest/v1/suite_dictados_clase?select=dictado'+
+            '&curso=eq.'+encodeURIComponent(cursoDiario)+
+            '&anio=eq.'+anio+'&semana_iso=eq.'+semana, { headers:_hdr() })
+        .then(function(r){ return r.ok ? r.json() : []; })
+        .then(function(rows){
+          var d = rows && rows[0] && rows[0].dictado;
+          try{
+            if(d && DSgen.loadDictadoForEdit){
+              DSgen.loadDictadoForEdit(d);
+              if(DSedit.setMode) DSedit.setMode('alturas');
+              estado('Dictado de la semana cargado en el editor', '#fde68a');
+            } else if(!DSgen.getDictado() && DSedit.rollNew){
+              DSedit.rollNew();
+            }
+          }catch(e){ console.warn('[paraClase] carga inicial:', e); }
+        })
+        .catch(function(){ try{ if(!DSgen.getDictado() && DSedit.rollNew) DSedit.rollNew(); }catch(e){} });
+    }, 600);
+  }
+
+  /* ---- boton en la barra de Edicion ---------------------------------- */
+  function injectBtn(){
+    var bar=document.getElementById('editBar');
+    if(bar && !document.getElementById('btnParaClase')){
+      var b=document.createElement('button');
+      b.id='btnParaClase';
+      b.className='edit-btn';
+      b.style.cssText='background:linear-gradient(120deg,#d4af37,#b8860b 60%,#8a6508);color:#fff;'+
+        'font-weight:800;border:0;box-shadow:0 4px 14px rgba(184,134,11,.4)';
+      b.textContent='\ud83c\udfac Cargar dictado animado para clase';
+      b.onclick=cargar;
+      var done=bar.querySelector('.edit-done');
+      bar.insertBefore(b, done||null);
+    }
+    setTimeout(injectBtn, 800);
+  }
+
+  /* ---- JPG de la solucion (titulo + partitura del editor) ------------ */
+  function solucionJPG(){
+    return new Promise(function(resolve,reject){
+      var panel=document.getElementById('dictScore');
+      var svg=panel && panel.querySelector('svg');
+      if(!svg){ reject(new Error('No hay partitura visible. Genera el dictado primero.')); return; }
+      var sw=(svg.viewBox&&svg.viewBox.baseVal&&svg.viewBox.baseVal.width)||((svg.width&&svg.width.baseVal&&svg.width.baseVal.value)||900);
+      var sh=(svg.viewBox&&svg.viewBox.baseVal&&svg.viewBox.baseVal.height)||((svg.height&&svg.height.baseVal&&svg.height.baseVal.value)||300);
+      var clone=svg.cloneNode(true);
+      clone.setAttribute('xmlns','http://www.w3.org/2000/svg');
+      var quitar=clone.querySelectorAll('.ed-hit,.ed-pulse-hit,#edSelBox,.ed-pulse-dot');
+      for(var i=0;i<quitar.length;i++) quitar[i].remove();
+      var xml=new XMLSerializer().serializeToString(clone);
+      var svg64='data:image/svg+xml;base64,'+btoa(unescape(encodeURIComponent(xml)));
+      var img=new Image();
+      img.onload=function(){
+        var scale=2.5, padX=24, titleH=58, gap=16, padBottom=20;
+        var W=sw, H=titleH+gap+sh+padBottom;
+        var canvas=document.createElement('canvas');
+        canvas.width=Math.round(W*scale); canvas.height=Math.round(H*scale);
+        var ctx=canvas.getContext('2d');
+        ctx.scale(scale,scale);
+        ctx.fillStyle='#ffffff'; ctx.fillRect(0,0,W,H);
+        ctx.textBaseline='alphabetic'; ctx.fillStyle='#0a1028';
+        var x=padX, baseY=38;
+        ctx.font='800 30px "Helvetica Neue",Arial,sans-serif'; ctx.fillText('DIC', x, baseY); x+=ctx.measureText('DIC').width;
+        ctx.font='300 30px "Helvetica Neue",Arial,sans-serif'; ctx.fillText('TADO', x, baseY); x+=ctx.measureText('TADO').width;
+        ctx.font='800 30px "Helvetica Neue",Arial,sans-serif'; ctx.fillStyle='#b8860b'; ctx.fillText(' PRO', x, baseY); x+=ctx.measureText(' PRO').width;
+        ctx.font='400 19px "Helvetica Neue",Arial,sans-serif'; ctx.fillStyle='#3a3f55';
+        ctx.fillText('  n\u00ba '+numero+'  \u00b7  '+cursoLbl+'  \u00b7  semana '+semana+'/'+anio, x, baseY-2);
+        ctx.drawImage(img, padX, titleH+gap, sw-padX*2, sh);
+        resolve(canvas.toDataURL('image/jpeg', 0.92));
+      };
+      img.onerror=function(){ reject(new Error('No se pudo procesar la partitura.')); };
+      img.src=svg64;
+    });
+  }
+  function dataURLtoBlobPC(dataURL){
+    var parts=dataURL.split(','); var mime=parts[0].match(/:(.*?);/)[1];
+    var bin=atob(parts[1]); var arr=new Uint8Array(bin.length);
+    for(var i=0;i<bin.length;i++) arr[i]=bin.charCodeAt(i);
+    return new Blob([arr],{type:mime});
+  }
+
+  /* ---- accion principal ---------------------------------------------- */
+  var enCurso=false;
+  async function cargar(){
+    if(enCurso) return;
+    var D = (window.DSgen && DSgen.getDictado) ? DSgen.getDictado() : null;
+    if(!D){ alert('No hay dictado para cargar. Genera o edita uno primero.'); return; }
+    enCurso=true;
+    var btn=document.getElementById('btnParaClase');
+    if(btn) btn.disabled=true;
+    try{
+      estado('Preparando\u2026');
+      try{ if(DSgen.sanitizeMidis) DSgen.sanitizeMidis(D); }catch(e){}
+      try{ if(DSgen.currentBpm) D.bpm=DSgen.currentBpm(); }catch(e){}
+
+      estado('Generando soluci\u00f3n\u2026');
+      var dataURL=await solucionJPG();
+      var blob=dataURLtoBlobPC(dataURL);
+      var fname='dictado_animado_n'+numero+'_'+cursoDiario+'_s'+semana+'_'+anio+'.jpg';
+      var path='semanas/'+cursoDiario+'/'+anio+'-s'+semana+'/'+fname;
+      estado('Subiendo soluci\u00f3n\u2026');
+      var up=await fetch(SB_URL+'/storage/v1/object/diario/'+path, {
+        method:'POST',
+        headers:_hdr({ 'Content-Type':'image/jpeg', 'x-upsert':'true' }),
+        body: blob
+      });
+      if(!up.ok){ var t1=await up.text(); throw new Error('storage HTTP '+up.status+' '+t1.slice(0,120)); }
+
+      estado('Guardando dictado\u2026');
+      var body=JSON.stringify([{
+        curso: cursoDiario, anio: anio, semana_iso: semana, numero: numero,
+        dictado: D, solucion_path: path, solucion_filename: fname
+      }]);
+      var r=await fetch(SB_URL+'/rest/v1/suite_dictados_clase?on_conflict=curso,anio,semana_iso', {
+        method:'POST',
+        headers:_hdr({ 'Content-Type':'application/json',
+                       'Prefer':'resolution=merge-duplicates,return=representation' }),
+        body: body
+      });
+      if(!r.ok){ var t2=await r.text(); throw new Error('tabla HTTP '+r.status+' '+t2.slice(0,120)); }
+
+      estado('Registrando en el Diario\u2026');
+      var pat=await fetch(SB_URL+'/rest/v1/semanas?curso=eq.'+encodeURIComponent(cursoDiario)+
+                          '&anio=eq.'+anio+'&semana_iso=eq.'+semana, {
+        method:'PATCH',
+        headers:_hdr({ 'Content-Type':'application/json', 'Prefer':'return=representation' }),
+        body: JSON.stringify({ dictado_path:path, dictado_filename:fname,
+                               dictado_mime:'image/jpeg', dictado_numero:numero })
+      });
+      var filas = pat.ok ? await pat.json() : [];
+      if(!pat.ok || !filas.length){
+        estado('\u2713 Cargado (guarda la semana en el Diario para el rastreo)', '#fde68a');
+      } else {
+        estado('\u2713 Dictado n\u00ba '+numero+' cargado \u00b7 vuelve al Diario', '#bbf7d0');
+      }
+    }catch(e){
+      console.warn('[paraClase]', e);
+      estado('\u2717 '+((e&&e.message)||e), '#fecaca');
+    }finally{
+      enCurso=false;
+      if(btn) btn.disabled=false;
+    }
+  }
+
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', function(){ banner(); autoCurso(); injectBtn(); });
+  else { banner(); autoCurso(); injectBtn(); }
+})();
+</script>
 </body>
 </html>
