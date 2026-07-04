@@ -786,9 +786,9 @@
     <div class="gen-controls" id="genControls">
       <div class="tempo-ctl">
         <span class="tempo-lbl">Tempo</span>
-        <button class="tempo-btn" onclick="DSgen.bumpBpm(-1)" title="Más lento">−</button>
+        <button type="button" class="tempo-btn" onclick="DSgen.bumpBpm(-1)" title="Más lento">−</button>
         <span class="tempo-val" id="bpmOut">50</span>
-        <button class="tempo-btn" onclick="DSgen.bumpBpm(1)" title="Más rápido">+</button>
+        <button type="button" class="tempo-btn" onclick="DSgen.bumpBpm(1)" title="Más rápido">+</button>
         <input type="hidden" id="bpmSlider" value="50">
       </div>
     </div>
@@ -6929,7 +6929,19 @@ const DSgen = (function(){
     if(isPunt()) userBpmPunt=v; else userBpmNegra=v;
     // guardar el tempo en el propio dictado para que se registre y se restaure al cargarlo
     if(DICTADO){ DICTADO.bpm=v; }
+    // r5b (Iago 4-jul): el redraw vaciaba la partitura un instante, la página
+    // encogía y el navegador clavaba el scroll ARRIBA con cada toque del
+    // metrónomo. Fijamos la altura durante el repintado y restauramos scroll.
+    const host=document.getElementById('dictScore');
+    const sx=window.scrollX, sy=window.scrollY;
+    const hPrev=host?host.offsetHeight:0;
+    if(host && hPrev) host.style.minHeight=hPrev+'px';
     redraw();
+    window.scrollTo(sx, sy);
+    requestAnimationFrame(()=>{
+      window.scrollTo(sx, sy);
+      if(host) host.style.minHeight='';
+    });
     const out=document.getElementById('bpmOut'); if(out) out.textContent=v;
   }
   function beatSec(){ return 60/bpm(); }                 // segundos por PULSO
@@ -6974,8 +6986,9 @@ const DSgen = (function(){
   // En el resto de cursos (una sola voz) -> 4 repeticiones normales, sin destacar.
   function phraseVoiceGroups(){
     const c=window.DS_ACTIVE_COURSE||'';
-    // 1º y 2º GP: 5 repeticiones -> 3 destacando la clave de sol + 2 destacando la de fa.
-    if(c==='gp1' || c==='gp2') return [{voice:'sol',reps:3},{voice:'fa',reps:2}];
+    // r3 (Iago 4-jul): ESTÁNDAR 6 repeticiones -> 3 destacando la clave de
+    // sol + 3 destacando la de fa (antes 3+2).
+    if(c==='gp1' || c==='gp2') return [{voice:'sol',reps:3},{voice:'fa',reps:3}];
     return [{voice:null,reps:4}];
   }
   // max de una tarjeta (las frases dependen del curso)
@@ -6991,6 +7004,10 @@ const DSgen = (function(){
   }
   let used={}; let advancedPast=0;
   SEQ.forEach(s=>used[s.id]=0);
+  // r3 · MODO CLASE (Iago 4-jul): regalo pendiente — antes de que suene la
+  // 1ª frase por primera vez, arpegio suave + se revela la primera nota de
+  // cada voz (solo la cabeza) con fundido. Se activa en loadDictadoClase.
+  let giftPend=false;
 
   function totalPulses(){ return DICTADO.measures.length*DICTADO.beatsPerBar; }
 
@@ -7795,13 +7812,19 @@ const DSgen = (function(){
   // Si le falta, se deriva de la tecla. Garantiza que "lo que se ve es lo que suena".
   function sanitizeMidis(D){
     if(!D) return;
-    [D.measures, D.measuresFa].forEach(arr=>{
+    // r5 (Iago 4-jul): un esqueleto rítmico ES un dictado válido — las
+    // figuras sin cabeza asignada (noHead) reciben la altura NEUTRA de su
+    // clave (si4 en sol, re3 en fa) para que el dictado suene ENTERO tal
+    // cual está, en el editor, al subirlo y en el reproductor de clase.
+    [[D.measures, 71], [D.measuresFa, 50]].forEach(par=>{
+      const arr=par[0], neutro=par[1];
       if(!arr) return;
       arr.forEach(meas=>{
         if(!meas||!meas.notes) return;
         meas.notes.forEach(n=>{
-          if(n.rest || n.noHead) return;       // silencios y figuras sin cabeza no llevan altura
+          if(n.rest) return;
           if(n.midi==null && n.k){ const m=_vexKeyToMidi(n.k); if(m!=null) n.midi=m; }
+          if(n.midi==null) n.midi=neutro;
         });
       });
     });
@@ -8101,7 +8124,16 @@ const DSgen = (function(){
     else if(s.kind==='full'){ playWithCountdown(()=>playRange(0, DICTADO.measures.length, idx, null), idx); }
     else if(s.kind==='phrase'){
       const emph = (DICTADO && DICTADO.gp) ? phraseVoiceForUse(useIdx) : null;
-      playWithCountdown(()=>playRange(s.phrase===1?0:4, s.phrase===1?4:8, idx, emph), idx);
+      const arranque = ()=>playWithCountdown(()=>playRange(s.phrase===1?0:4, s.phrase===1?4:8, idx, emph), idx);
+      // r3 · el REGALO: solo en modo clase, solo la primera vez de la 1ª frase
+      if(giftPend && s.id==='fr1' && useIdx===0 && DICTADO && DICTADO.gp){
+        giftPend=false;
+        setCardPlaying(idx,true);
+        regaloPrimeraNota();
+        timers.push(setTimeout(()=>{ if(playing) arranque(); }, 2000));
+      } else {
+        arranque();
+      }
     }
   }
 
@@ -8891,6 +8923,28 @@ const DSgen = (function(){
           }
         }catch(e){}
       }
+      // r2 (Iago 3-jul): si la seleccion quedo obsoleta (dictado recien
+      // sustituido) el punto de arranque puede salir NaN o fuera de rango ->
+      // el play parecia mudo. Con cualquier valor invalido, desde el inicio.
+      if(!isFinite(startBeatAbs) || startBeatAbs<0) startBeatAbs=0;
+      // r4 (Iago 4-jul): el editor REPRODUCE LO QUE HAY — los esqueletos
+      // ritmicos (cabezas sin editar) suenan en la altura visible; si una
+      // nota no tiene ni midi ni tecla, se le da una altura neutra por
+      // clave para que el pase completo se escuche de principio a fin.
+      try{
+        [['sol', DICTADO.measures, 71], ['fa', DICTADO.measuresFa, 50]].forEach(function(par){
+          var arr=par[1]; if(!arr) return;
+          arr.forEach(function(m){
+            ((m&&m.notes)||[]).forEach(function(n){
+              if(n.rest || n.midi!=null) return;
+              var derivado=null;
+              try{ derivado=midiOfNote(n); }catch(e){}
+              n.midi=(derivado!=null && isFinite(derivado)) ? derivado : par[2];
+            });
+          });
+        });
+      }catch(e){}
+      try{ console.log('[playEditor] arranque en negra absoluta', startBeatAbs); }catch(e){}
       const startSeq=()=>{
         DSaudio.ensurePiano().then(p=>{
           playing=true;
@@ -8961,14 +9015,61 @@ const DSgen = (function(){
       if(playing) stopPlayback();
       // clonar para no mutar la biblioteca hasta que se registre de nuevo
       DICTADO = JSON.parse(JSON.stringify(dictadoObj));
+      // r2 (Iago 3-jul): dictados cargados de la BD pueden traer notas sin
+      // midi (solo con tecla VexFlow) -> al reproducir quedaban MUDAS aunque
+      // se vieran en la partitura. Saneamos SIEMPRE al cargar en el editor.
+      try{ sanitizeMidis(DICTADO); }catch(e){}
       revealedPulses=new Set(); fullRevealed=true; pistaRit=null; pistaMel=null; pistaPick=null; resetGpPista(); applyDictadoBpm(); keyRevealed=true; tsRevealed=true;
       disablePistaPicking();
       const hint=document.getElementById('pistaHint'); if(hint) hint.style.display='none';
       SEQ.forEach(s=>used[s.id]=0); advancedPast=0;
       renderSeq(); redraw();
       return DICTADO;
+    },
+    // r3 · MODO CLASE (Iago 4-jul): carga un dictado de la BD en el
+    // REPRODUCTOR (oculto, como lo ve el alumno) — no en el editor.
+    // El profe lo reproduce en el aula con el guion de pases de siempre:
+    // ref x2 -> completo x2 -> 1ª frase x6 (3 sol + 3 fa) -> completo x1 ->
+    // 2ª frase x6 -> completo x2. Deja armado el REGALO de la 1ª frase.
+    loadDictadoClase(dictadoObj){
+      if(playing) stopPlayback();
+      DICTADO = JSON.parse(JSON.stringify(dictadoObj));
+      try{ sanitizeMidis(DICTADO); }catch(e){}
+      revealedPulses=new Set(); fullRevealed=false; keyRevealed=false; tsRevealed=false;
+      pistaRit=null; pistaMel=null; pistaPick=null; resetGpPista(); applyDictadoBpm();
+      disablePistaPicking();
+      const hint=document.getElementById('pistaHint'); if(hint) hint.style.display='none';
+      SEQ.forEach(s=>used[s.id]=0); advancedPast=0;
+      giftPend=true;
+      renderSeq(); redraw();
+      return DICTADO;
     }
   };
+
+  // r3 · el REGALO: arpegio corto y suave sobre la tónica (registro agudo) y
+  // la primera nota de cada voz aparece como CABEZA (pista melódica del
+  // primer pulso) con un fundido suave de la partitura.
+  function regaloPrimeraNota(){
+    try{
+      DSaudio.ensurePiano().then(p=>{
+        const ac=DSaudio.ctx(); if(ac.state==='suspended') ac.resume();
+        const t0=ac.currentTime+0.05;
+        const base=((DICTADO&&DICTADO.tonicMidi)||60)+12;
+        [[0,0],[4,0.10],[7,0.20],[12,0.34]].forEach(par=>{
+          p.play(base+par[0], t0+par[1], {duration:1.1, gain:0.45});
+        });
+      });
+    }catch(e){}
+    pistaMel=0;   // primer pulso: cabezas reales (sin ritmo) en AMBAS voces
+    const host=document.getElementById('dictScore');
+    if(host){ host.style.transition='none'; host.style.opacity='0.4'; }
+    redraw();
+    if(host){
+      void host.getBoundingClientRect();
+      host.style.transition='opacity 1s ease';
+      host.style.opacity='1';
+    }
+  }
 })();
 window.DSgen = DSgen;   // exponer para los onclick del HTML y para DSedit/DSmanage
 
@@ -9159,7 +9260,7 @@ const DSval = (function(){
 
 <script>
 /* ============================================================
-   SUITE AT HOME . DICTADO ANIMADO . FASE B-PRO . r1 (paraClase)
+   SUITE AT HOME . DICTADO ANIMADO . FASE B-PRO . r4 (paraClase + modo=play + regalo + play de esqueletos)
    ------------------------------------------------------------
    Porte del bloque FASE B r2 del elemental. Se activa SOLO al
    llegar desde el Diario del Profesor con
@@ -9180,7 +9281,9 @@ const DSval = (function(){
 (function(){
   'use strict';
   var P = new URLSearchParams(location.search);
+  try{ console.info('[dictadospro] FASE B-PRO r5 (4-jul) activo'); }catch(e){}
   if(P.get('paraClase')!=='1') return;
+  var MODO_PLAY = (P.get('modo')==='play');   // r3: reproductor de clase
 
   var cursoDiario = P.get('curso')||'';
   var anio   = parseInt(P.get('anio'),10);
@@ -9239,6 +9342,34 @@ const DSval = (function(){
       if(Date.now()-t0<8000) setTimeout(vigila, 300);
     })();
     setTimeout(function(){
+      // r3 · MODO REPRODUCTOR DE CLASE: el dictado de la semana se carga
+      // OCULTO en el reproductor del alumno (guion de pases + regalo).
+      // El editor no se abre; hay un "✎ Editar" en la barra por si acaso.
+      if(MODO_PLAY){
+        fetch(SB_URL+'/rest/v1/suite_dictados_clase?select=dictado,numero'+
+              '&curso=eq.'+encodeURIComponent(cursoDiario)+
+              '&anio=eq.'+anio+'&semana_iso=eq.'+semana, { headers:_hdr() })
+          .then(function(r){ return r.ok ? r.json() : []; })
+          .then(function(rows){
+            var fila = rows && rows[0];
+            if(fila && fila.dictado && DSgen.loadDictadoClase){
+              try{
+                DSgen.loadDictadoClase(fila.dictado);
+                estado('▶ Reproductor de clase · Dictado nº '+(fila.numero||numero), '#86efac');
+                anadirBtnEditar();
+              }catch(e){ console.warn('[paraClase] reproductor:', e); }
+            } else {
+              estado('⚠ No hay dictado cargado esta semana — abriendo el editor…', '#fca5a5');
+              setTimeout(function(){ abrirEditor(); }, 1200);
+            }
+          })
+          .catch(function(){ estado('⚠ Sin conexión — abriendo el editor…', '#fca5a5'); setTimeout(abrirEditor, 1200); });
+        return;
+      }
+      abrirEditor();
+    }, 600);
+
+    function abrirEditor(){
       try{ DSedit.enter(); }
       catch(e){ console.warn('[paraClase] no pude abrir el editor:', e); return; }
       fetch(SB_URL+'/rest/v1/suite_dictados_clase?select=dictado'+
@@ -9258,11 +9389,28 @@ const DSval = (function(){
           }catch(e){ console.warn('[paraClase] carga inicial:', e); }
         })
         .catch(function(){ try{ if(!DSgen.getDictado() && DSedit.rollNew) DSedit.rollNew(); }catch(e){} });
-    }, 600);
+    }
+
+    // botón "✎ Editar" en la barra dorada (solo en modo reproductor)
+    function anadirBtnEditar(){
+      var bar=document.getElementById('paraClaseBar');
+      if(!bar || document.getElementById('btnIrEditor')) return;
+      var b=document.createElement('button');
+      b.id='btnIrEditor';
+      b.textContent='✎ Editar';
+      b.style.cssText='margin-left:12px;border:1px solid rgba(255,255,255,.5);border-radius:8px;'+
+        'padding:4px 12px;font-weight:800;cursor:pointer;background:rgba(255,255,255,.12);color:#fff';
+      b.onclick=function(){
+        var u=new URL(location.href); u.searchParams.delete('modo'); location.href=u.toString();
+      };
+      var est=document.getElementById('paraClaseEstado');
+      bar.insertBefore(b, est||null);
+    }
   }
 
   /* ---- boton en la barra de Edicion ---------------------------------- */
   function injectBtn(){
+    if(MODO_PLAY) return;   // r3: en el reproductor de clase no se edita
     var bar=document.getElementById('editBar');
     if(bar && !document.getElementById('btnParaClase')){
       var b=document.createElement('button');
