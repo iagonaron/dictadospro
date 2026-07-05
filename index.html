@@ -9408,6 +9408,92 @@ const DSval = (function(){
     }
   }
 
+  /* ---- CONFIRMAR TONALIDAD (Iago 5-jul): al cargar dictado animado, si el
+     MusicXML no traía <mode>, la armadura sola no distingue Mayor de su
+     relativo menor. Mostramos una ventana para confirmar el MODO (Mayor/menor);
+     la armadura no cambia, solo la tónica y el nombre. ----------------------- */
+  // pitch class de cada mayor por círculo de quintas (fifths -> PC de la tónica mayor)
+  var _MAJ_PC = {'-7':11,'-6':6,'-5':1,'-4':8,'-3':3,'-2':10,'-1':5,'0':0,'1':7,'2':2,'3':9,'4':4,'5':11,'6':6,'7':1};
+  var _FLAT_ES  = ['Do','Re♭','Re','Mi♭','Mi','Fa','Sol♭','Sol','La♭','La','Si♭','Si'];
+  var _SHARP_ES = ['Do','Do♯','Re','Re♯','Mi','Fa','Fa♯','Sol','Sol♯','La','La♯','Si'];
+  // nombres vexflow de la tónica mayor por fifths (para keySig)
+  var _MAJ_KS = {'-7':'Cb','-6':'Gb','-5':'Db','-4':'Ab','-3':'Eb','-2':'Bb','-1':'F','0':'C','1':'G','2':'D','3':'A','4':'E','5':'B','6':'F#','7':'C#'};
+
+  // dado fifths y modo ('major'|'minor'), recalcula {name, key, mode, keySig, tonicMidi}
+  function _tonalidadDesde(fifths, modo){
+    var f=String(fifths);
+    var majPC=_MAJ_PC[f]!=null?_MAJ_PC[f]:0;
+    var esMenor=(modo==='minor');
+    var tonicPC = esMenor ? (majPC+9)%12 : majPC;   // relativo menor = una 3ª menor abajo (o 6ª arriba)
+    var tonicMidi = 60 + tonicPC; if(tonicMidi>71) tonicMidi-=12;
+    var nombreNota = (fifths<0 ? _FLAT_ES : _SHARP_ES)[tonicPC];
+    var keySig = _MAJ_KS[f]||'C';
+    // key corto: nombre vexflow de la tónica (mayor usa keySig; menor añade 'm')
+    var keyCorto = esMenor ? (keySig+'m') : keySig;
+    return {
+      name: nombreNota + (esMenor?' menor':' mayor'),
+      key: keyCorto, mode: esMenor?'minor':'major',
+      keySig: keySig, tonicMidi: tonicMidi,
+      nombreNota: nombreNota
+    };
+  }
+
+  // fifths a partir del keySig del dictado (para saber la armadura actual)
+  function _fifthsDeDictado(D){
+    var ksToF={'Cb':-7,'Gb':-6,'Db':-5,'Ab':-4,'Eb':-3,'Bb':-2,'F':-1,'C':0,'G':1,'D':2,'A':3,'E':4,'B':5,'F#':6,'C#':7};
+    var ks=(D.keySig||'C');
+    return ksToF[ks]!=null?ksToF[ks]:0;
+  }
+
+  // muestra la ventana modal; resuelve con el modo elegido ('major'|'minor') o null si cancela
+  function _pedirConfirmarTonalidad(D){
+    return new Promise(function(resolve){
+      var fifths=_fifthsDeDictado(D);
+      var modoActual = (D.mode==='minor')?'minor':'major';
+      var tMayor=_tonalidadDesde(fifths,'major');
+      var tMenor=_tonalidadDesde(fifths,'minor');
+      // armadura en texto
+      var armTxt = fifths===0 ? 'sin alteraciones' : (Math.abs(fifths)+(fifths>0?' sostenido':' bemol')+(Math.abs(fifths)>1?'s':''));
+
+      var ov=document.createElement('div');
+      ov.id='confTonOverlay';
+      ov.style.cssText='position:fixed;inset:0;background:rgba(6,10,25,.78);backdrop-filter:blur(4px);z-index:99999;display:flex;align-items:center;justify-content:center;padding:20px';
+      var card=document.createElement('div');
+      card.style.cssText='background:linear-gradient(160deg,#0f1530,#0a1028);border:1px solid rgba(233,201,106,.3);border-radius:18px;max-width:440px;width:100%;padding:26px 24px;box-shadow:0 20px 60px rgba(0,0,0,.6);font-family:inherit;color:#e8ecff';
+      card.innerHTML =
+        '<div style="font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:#e9c96a;font-weight:800;margin-bottom:6px">Confirmar tonalidad</div>'+
+        '<div style="font-size:15px;color:#aab4d8;margin-bottom:4px">Armadura detectada: <b style="color:#fff">'+armTxt+'</b></div>'+
+        '<div style="font-size:13px;color:#8a94b8;margin-bottom:18px">La armadura no distingue Mayor de su relativo menor. Elige el modo correcto:</div>'+
+        '<div style="display:flex;gap:12px;margin-bottom:20px">'+
+          '<button id="confTonMayor" data-modo="major" style="flex:1;padding:16px 10px;border-radius:12px;border:2px solid '+(modoActual==='major'?'#e9c96a':'rgba(233,201,106,.25)')+';background:'+(modoActual==='major'?'rgba(233,201,106,.16)':'rgba(255,255,255,.02)')+';color:#fff;cursor:pointer;transition:all .15s">'+
+            '<div style="font-size:20px;font-weight:800;margin-bottom:3px">'+tMayor.name+'</div>'+
+            '<div style="font-size:11px;color:#9aa4c8">Mayor</div></button>'+
+          '<button id="confTonMenor" data-modo="minor" style="flex:1;padding:16px 10px;border-radius:12px;border:2px solid '+(modoActual==='minor'?'#e9c96a':'rgba(233,201,106,.25)')+';background:'+(modoActual==='minor'?'rgba(233,201,106,.16)':'rgba(255,255,255,.02)')+';color:#fff;cursor:pointer;transition:all .15s">'+
+            '<div style="font-size:20px;font-weight:800;margin-bottom:3px">'+tMenor.name+'</div>'+
+            '<div style="font-size:11px;color:#9aa4c8">menor</div></button>'+
+        '</div>'+
+        '<div style="display:flex;gap:10px;justify-content:flex-end">'+
+          '<button id="confTonCancel" style="padding:10px 16px;border-radius:10px;border:1px solid rgba(255,255,255,.15);background:transparent;color:#aab4d8;cursor:pointer;font-weight:600">Cancelar</button>'+
+          '<button id="confTonOk" style="padding:10px 20px;border-radius:10px;border:0;background:linear-gradient(120deg,#e9c96a,#d4af37);color:#1a1407;cursor:pointer;font-weight:800">Confirmar y cargar</button>'+
+        '</div>';
+      ov.appendChild(card);
+      document.body.appendChild(ov);
+
+      var elegido = modoActual;   // por defecto, lo que ya tenía
+      function pinta(){
+        var bM=document.getElementById('confTonMayor'), bm=document.getElementById('confTonMenor');
+        bM.style.borderColor = elegido==='major'?'#e9c96a':'rgba(233,201,106,.25)';
+        bM.style.background   = elegido==='major'?'rgba(233,201,106,.16)':'rgba(255,255,255,.02)';
+        bm.style.borderColor = elegido==='minor'?'#e9c96a':'rgba(233,201,106,.25)';
+        bm.style.background   = elegido==='minor'?'rgba(233,201,106,.16)':'rgba(255,255,255,.02)';
+      }
+      document.getElementById('confTonMayor').onclick=function(){ elegido='major'; pinta(); };
+      document.getElementById('confTonMenor').onclick=function(){ elegido='minor'; pinta(); };
+      document.getElementById('confTonCancel').onclick=function(){ ov.remove(); resolve(null); };
+      document.getElementById('confTonOk').onclick=function(){ ov.remove(); resolve(elegido); };
+    });
+  }
+
   /* ---- boton en la barra de Edicion ---------------------------------- */
   function injectBtn(){
     if(MODO_PLAY) return;   // r3: en el reproductor de clase no se edita
@@ -9476,6 +9562,17 @@ const DSval = (function(){
     if(enCurso) return;
     var D = (window.DSgen && DSgen.getDictado) ? DSgen.getDictado() : null;
     if(!D){ alert('No hay dictado para cargar. Genera o edita uno primero.'); return; }
+
+    // CONFIRMAR TONALIDAD (Iago 5-jul): la armadura no distingue Mayor de menor.
+    // Pedimos el modo antes de cargar; si el usuario cancela, no se carga nada.
+    var modoElegido = await _pedirConfirmarTonalidad(D);
+    if(modoElegido===null) return;   // canceló
+    var fifths=_fifthsDeDictado(D);
+    var ton=_tonalidadDesde(fifths, modoElegido);
+    // aplicar la tonalidad confirmada al dictado (la armadura NO cambia, solo tónica/nombre/modo)
+    D.mode=ton.mode; D.name=ton.name; D.key=ton.key; D.tonicMidi=ton.tonicMidi;
+    try{ if(DSgen.setTonalidad) DSgen.setTonalidad(ton); }catch(e){}
+
     enCurso=true;
     var btn=document.getElementById('btnParaClase');
     if(btn) btn.disabled=true;
