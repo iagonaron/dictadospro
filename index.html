@@ -559,6 +559,11 @@
   .course-gate-list .course-opt-l{ font-size:18px; font-weight:900; line-height:1.3; color:var(--ink); }
   .course-gate-list .course-opt-big{ font-size:64px; font-weight:900; line-height:1; color:var(--gold-soft);
     letter-spacing:-.02em; text-shadow:0 2px 18px rgba(212,175,55,.3); }
+  /* curso todavía no desarrollado: atenuado, sin hover y con aviso */
+  .course-gate-list .course-opt.notready{ opacity:.42; filter:grayscale(.55); cursor:not-allowed; }
+  .course-gate-list .course-opt.notready:hover{ border-color:#4a3914; transform:none; box-shadow:none; }
+  .course-opt-note{ font-size:12px; font-weight:600; line-height:1.35; color:var(--muted);
+    max-width:190px; text-wrap:balance; }
   @media(max-width:620px){ .course-gate-list{ grid-template-columns:1fr; max-width:340px; } }
 
   /* botón guardar */
@@ -4332,7 +4337,7 @@ window.DS.melodyLaws = { MEL_LAWS:(typeof MEL_LAWS!=='undefined'?MEL_LAWS:[]), M
     {id:'ge2', label:'2º Grado Elemental', num:'2º', g:'G', e:'E', locked:false, empty:true},
     {id:'ge3', label:'3º Grado Elemental', num:'3º', g:'G', e:'E', locked:false, empty:true},
     {id:'ge4', label:'4º Grado Elemental', num:'4º', g:'G', e:'E', locked:false, empty:false}, // configuración actual
-    {id:'gp1', label:'1º Grado Profesional', num:'1º', g:'G', e:'P', locked:false},
+    {id:'gp1', label:'1º Grado Profesional', num:'1º', g:'G', e:'P', locked:false, notReady:true}, // sin dictados cargados todavía: inhabilitado en el gate
     {id:'gp2', label:'2º Grado Profesional', num:'2º', g:'G', e:'P', locked:false},
   ];
   // solo los cursos del producto actual aparecen en selector/gate
@@ -4570,18 +4575,27 @@ window.DS.melodyLaws = { MEL_LAWS:(typeof MEL_LAWS!=='undefined'?MEL_LAWS:[]), M
     const host=document.getElementById('courseGateList'); if(!host) return;
     host.innerHTML='';
     COURSES.forEach(c=>{
-      const avail = GATE_AVAILABLE.includes(c.id) && !c.locked;
-      const beta  = GATE_BETA.includes(c.id) && !c.locked;
+      const notReady = !!c.notReady;                       // curso sin dictados: no accesible
+      const avail = GATE_AVAILABLE.includes(c.id) && !c.locked && !notReady;
+      const beta  = GATE_BETA.includes(c.id) && !c.locked && !notReady;
       const b=document.createElement('button');
       // beta: atenuado + "Próximamente" pero clicable (abre modal contraseña)
-      b.className='course-opt'+( avail ? '' : (beta ? ' locked' : ' locked') );
+      b.className='course-opt'+( avail ? '' : ' locked' )+( notReady ? ' notready' : '' );
       // etiqueta: en el pro mostramos el ordinal grande (1GP / 2GP); en elemental, el nombre completo
       const shortLbl = (PRODUCT==='pro') ? (c.num.replace('º','')+'GP') : c.label;
       const lblHtml = (PRODUCT==='pro')
         ? '<span class="course-opt-big">'+shortLbl+'</span>'
         : '<span class="course-opt-l">'+c.label+'</span>';
-      b.innerHTML=lblHtml+(!avail ? '<span class="course-opt-tag">Próximamente</span>' : '');
-      if(avail){
+      b.innerHTML = lblHtml + ( notReady
+        ? '<span class="course-opt-tag">En desarrollo</span>'+
+          '<span class="course-opt-note">Este curso todavía no está desarrollado</span>'
+        : (!avail ? '<span class="course-opt-tag">Próximamente</span>' : '') );
+      if(notReady){
+        b.disabled = true;
+        b.setAttribute('aria-disabled','true');
+        b.title = 'Este curso todavía no está desarrollado';
+        b.onclick = null;
+      } else if(avail){
         b.onclick=()=>{ setActiveCourse(c.id); buildFloating(); closeGate(); try{ if(window.DSgen) window.DSgen.clearDictado(); }catch(e){} };
       } else if(beta){
         b.style.cursor='pointer';
@@ -4951,6 +4965,18 @@ var DSedit = (function(){
   function clearUndo(){ undoStack=[]; }
 
   function isPunt(){ const D=DSgen.getDictado(); return !!(D&&D.pulseFig==='qd'); }
+  // factor de duración de cada figura por grupos de valoración especial (tresillo 3:2 -> 2/3).
+  // Devuelve un array de 1 por figura si el compás no tiene grupos especiales.
+  function tupF(meas){
+    const n=(meas&&meas.notes)?meas.notes.length:0;
+    const tf=new Array(n).fill(1);
+    ((meas&&meas._tuplets)||[]).forEach(tp=>{
+      const f=tp.def?(tp.def.notes/tp.def.num):1;
+      const span=tp.def?tp.def.first:0;
+      for(let q=tp.start;q<tp.start+span;q++){ if(q<tf.length) tf[q]=f; }
+    });
+    return tf;
+  }
 
   function open(){
     // "Registrar nuevo dictado": si no hay dictado en pantalla, generamos uno de partida con el motor.
@@ -5114,7 +5140,7 @@ var DSedit = (function(){
         const arr=(sel.voice==='fa' && D.measuresFa)?D.measuresFa:D.measures;
         const meas=arr[sel.measIdx];
         let acc=0, p=0;
-        if(meas){ for(let i=0;i<sel.noteIdx;i++){ acc+=(DB[(meas.notes[i].d||'').replace('r','')]||0); } p=Math.floor(acc/PB+1e-6); }
+        if(meas){ const tf=tupF(meas); for(let i=0;i<sel.noteIdx;i++){ acc+=(DB[(meas.notes[i].d||'').replace('r','')]||0)*tf[i]; } p=Math.floor(acc/PB+1e-6); }
         lastPos={voice:sel.voice||'sol', mi:sel.measIdx, p};
       }
     }catch(e){}
@@ -5130,11 +5156,11 @@ var DSedit = (function(){
       const arr=(wantVoice==='fa' && D.measuresFa)?D.measuresFa:D.measures;
       const meas=arr[lastPos.mi]; if(!meas) return;
       // primera nota (no silencio) cuyo pulso == lastPos.p
-      let acc=0, target=-1;
+      let acc=0, target=-1; const tfR=tupF(meas);
       for(let i=0;i<meas.notes.length;i++){
         const pi=Math.floor(acc/PB+1e-6);
         if(pi===lastPos.p && !(meas.notes[i].d||'').includes('r')){ target=i; break; }
-        acc+=(DB[(meas.notes[i].d||'').replace('r','')]||0);
+        acc+=(DB[(meas.notes[i].d||'').replace('r','')]||0)*tfR[i];
       }
       if(target<0){
         // si en ese pulso solo hay silencio, coger la primera nota del compás
@@ -5243,7 +5269,7 @@ var DSedit = (function(){
         const vc=rec.voice||'sol';
         const arr=(vc==='fa' && D.measuresFa)?D.measuresFa:D.measures;
         const meas=arr[rec.measIdx];
-        let acc=0; for(let i=0;i<rec.noteIdx;i++){ acc+=(DB[(meas.notes[i].d||'').replace('r','')]||0); }
+        let acc=0; const tfS=tupF(meas); for(let i=0;i<rec.noteIdx;i++){ acc+=(DB[(meas.notes[i].d||'').replace('r','')]||0)*tfS[i]; }
         const p=Math.floor(acc/PB+1e-6);
         const k=ritPulses.findIndex(o=>o.voice===vc && o.mi===rec.measIdx && o.p===p);
         if(k>=0){ ritSel=k; ritNumCycle={key:null,idx:0}; paintRitSel(); }
@@ -5492,14 +5518,15 @@ var DSedit = (function(){
     const arr=(voice==='fa' && D.measuresFa)?D.measuresFa:D.measures;
     const meas=arr[sel.measIdx]; if(!meas) return;
     // pulso que contiene la nota seleccionada
-    let acc=0; for(let i=0;i<sel.noteIdx;i++){ acc+=(DB[(meas.notes[i].d||'').replace('r','')]||0); }
+    const tfA=tupF(meas);
+    let acc=0; for(let i=0;i<sel.noteIdx;i++){ acc+=(DB[(meas.notes[i].d||'').replace('r','')]||0)*tfA[i]; }
     const p=Math.floor(acc/PB+1e-6);
     // índices de las figuras de ese pulso
     let acc2=0; const idxs=[];
     for(let i=0;i<meas.notes.length;i++){
       const pp=Math.floor(acc2/PB+1e-6);
       if(pp===p) idxs.push(i);
-      acc2+=(DB[(meas.notes[i].d||'').replace('r','')]||0);
+      acc2+=(DB[(meas.notes[i].d||'').replace('r','')]||0)*tfA[i];
     }
     if(!idxs.length) return;
     applyCellByCount(sel.measIdx, p, idxs, voice, nFigs);
@@ -5509,11 +5536,11 @@ var DSedit = (function(){
         const D2=DSgen.getDictado();
         const arr2=(voice==='fa' && D2.measuresFa)?D2.measuresFa:D2.measures;
         const meas2=arr2[sel?sel.measIdx:0]; if(!meas2) return;
-        let a=0, target=-1;
+        let a=0, target=-1; const tf2=tupF(meas2);
         for(let i=0;i<meas2.notes.length;i++){
           const pp=Math.floor(a/PB+1e-6);
           if(pp===p && !(meas2.notes[i].d||'').includes('r')){ target=i; break; }
-          a+=(DB[(meas2.notes[i].d||'').replace('r','')]||0);
+          a+=(DB[(meas2.notes[i].d||'').replace('r','')]||0)*tf2[i];
         }
         if(target>=0){
           const rec=(window.DS_EDIT_NOTES||[]).find(r=>r.measIdx===(sel?sel.measIdx:0) && r.noteIdx===target && (r.voice||'sol')===voice && !r.rest);
@@ -5602,6 +5629,7 @@ var DSedit = (function(){
     cells.forEach(c=>{
       const b=document.createElement('button');
       b.className='cellpick-item';
+      b.title=c.name||'';        // nombre de la célula al pasar el ratón (p.ej. "Tresillo de corcheas (3:2)")
       const holder=document.createElement('div'); holder.className='cp-vex';
       b.appendChild(holder);
       b.onclick=()=>applyCell(mi,p,idxs,c,voice||'sol');
@@ -7098,8 +7126,17 @@ const DSgen = (function(){
       const baseP = (measIdx!=null ? measIdx : 0) * D.beatsPerBar;
       // posición (en pulsos) de cada figura, para saber a qué pulso pertenece
       const DBL2={'q':1,'8':0.5,'16':0.25,'h':2,'qd':1.5,'8d':0.75};
+      // GRUPOS DE VALORACIÓN ESPECIAL (tresillos, etc.): cada figura del grupo dura
+      // nominal * (notes/num)  -> tresillo 3:2 = 2/3. Sin esto, las 3 corcheas de un
+      // tresillo ocuparían 1,5 pulsos y descuadrarían pulsos, vigas y pistas.
+      const tupF=new Array((meas.notes||[]).length).fill(1);
+      (meas._tuplets||[]).forEach(tp=>{
+        const f=tp.def?(tp.def.notes/tp.def.num):1;
+        const span=tp.def?tp.def.first:0;
+        for(let q=tp.start; q<tp.start+span; q++){ if(q<tupF.length) tupF[q]=f; }
+      });
       let accP=0; const figPulse=[];
-      (meas.notes||[]).forEach(n=>{ figPulse.push(Math.floor(accP/PB+1e-6)); accP+=(DBL2[(n.d||'').replace('r','')]||0); });
+      (meas.notes||[]).forEach((n,qi)=>{ figPulse.push(Math.floor(accP/PB+1e-6)); accP+=(DBL2[(n.d||'').replace('r','')]||0)*(tupF[qi]||1); });
       // pistas de ESTA voz (pulso global con pista rítmica / melódica)
       const vp = (voice && gpPista[voice]) ? gpPista[voice] : {rit:null, mel:null};
       const showReal = (qi)=> GP_EDITING || fullRevealed || revealedPulses.has(baseP+figPulse[qi]);
@@ -7185,14 +7222,31 @@ const DSgen = (function(){
         notes.push(sn);
         figs.push({sn, n, rest, dur, isHead, qi, line});
       });
-      return {notes, figs};
+      // factor de duración real de cada figura (1 salvo dentro de un grupo especial)
+      figs.forEach(f=>{ f.tf = (f.hidden || f.pistaMel) ? 1 : (tupF[f.qi]||1); });
+      // dibujar el número del grupo (3 del tresillo, etc.) cuando se ven TODAS sus figuras
+      // con su ritmo real. Si el pulso está oculto o con pista melódica, no se dibuja.
+      const tuplets=[];
+      (meas._tuplets||[]).forEach(tp=>{
+        const span=tp.def?tp.def.first:0; if(!span) return;
+        const slice=figs.filter(f=>f.qi>=tp.start && f.qi<tp.start+span && !f.hidden && !f.pistaMel);
+        if(slice.length!==span) return;
+        const allBeamed=slice.every(f=>!f.rest && (f.dur==='8'||f.dur==='16'));
+        try{
+          tuplets.push(new VF.Tuplet(slice.map(f=>f.sn), {
+            num_notes: tp.def.num, notes_occupied: tp.def.notes,
+            bracketed: !allBeamed, ratioed: false
+          }));
+        }catch(e){}
+      });
+      return {notes, figs, tuplets};
     }
 
     // agrupa las vigas por PULSO: las figuras que caen dentro del mismo pulso
     // (negra con puntillo en ternario, negra en binario) se vigan juntas.
     function beamByPulse(figs, ts, clef){
       const beams=[];
-      const durOf=f=>{ const d=(f.dur||''); if(d==='qd')return 1.5; if(d==='8d')return 0.75; return DBL[d.replace('d','')]||1; };
+      const durOf=f=>{ const d=(f.dur||''); const base=(d==='qd')?1.5:((d==='8d')?0.75:(DBL[d.replace('d','')]||1)); return base*(f.tf||1); };
       let acc=0;
       const withPos=figs.map(f=>{ const o={f, start:acc, dur:durOf(f)}; acc+=o.dur; return o; });
       const totalPulses=Math.round(acc/PB);
@@ -7279,11 +7333,11 @@ const DSgen = (function(){
           const clef=(voice==='sol')?'treble':'bass';
           const meas=(voice==='sol')?D.measures[measIdx]:D.measuresFa[measIdx];
           if(!meas) return;
-          const {notes, figs}=buildBarNotes(meas, clef, voice==='sol'?headSol:headFa, measIdx, voice);
+          const {notes, figs, tuplets}=buildBarNotes(meas, clef, voice==='sol'?headSol:headFa, measIdx, voice);
           const voiceVF=new VF.Voice({num_beats:D.beatsPerBar, beat_value: ternary?8:4, resolution:VF.RESOLUTION}).setMode(VF.Voice.Mode.SOFT);
           voiceVF.setStrict(false);
           voiceVF.addTickables(notes);
-          built[voice]={notes, figs, voiceVF, beams:beamByPulse(figs, D.ts, clef)};
+          built[voice]={notes, figs, voiceVF, beams:beamByPulse(figs, D.ts, clef), tuplets:tuplets||[]};
         });
         // formatear juntas (alineación temporal de las dos voces)
         const voicesArr=[]; if(built.sol) voicesArr.push(built.sol.voiceVF); if(built.fa) voicesArr.push(built.fa.voiceVF);
@@ -7304,6 +7358,7 @@ const DSgen = (function(){
           const stave=(voice==='sol')?st.sG:st.sF;
           b.voiceVF.draw(ctx, stave);
           b.beams.forEach(bm=>bm.setContext(ctx).draw());
+          (b.tuplets||[]).forEach(tp=>{ try{ tp.setContext(ctx).draw(); }catch(e){} });
           b.figs.forEach(f=>{
             let el=null; try{ el=f.sn.getSVGElement&&f.sn.getSVGElement(); }catch(e){}
             // PISTA RÍTMICA: ocultar la cabeza, dejar solo plica/corchete/puntillo
@@ -10317,7 +10372,7 @@ window.DictadoVideo = (function(){
       var raw=(''+(o.d||'q')).replace('r','');
       var base=raw.replace('d','');
       var esRest=/r/.test(''+o.d);
-      var db=DB[raw]||1;
+      var db=(DB[raw]||1)*(o.tf||1);   // grupos especiales (tresillo): duración real
       var thisPulse=Math.floor(pos/PB + 1e-9);
       if(thisPulse!==curPulse){ flush(); curPulse=thisPulse; }
       if((base==='8'||base==='16') && !esRest){ run.push(o); } else { flush(); }
@@ -10347,7 +10402,14 @@ window.DictadoVideo = (function(){
     function notasDeCompas(meas, mi, clef){
       var notas=(meas[mi]&&meas[mi].notes)||[];
       var restKey=(clef==='bass')?'d/3':'b/4';
-      return notas.map(function(n){
+      // grupos de valoración especial (tresillos…) de este compás
+      var tups=(meas[mi]&&meas[mi]._tuplets)||[];
+      var tupF=new Array(notas.length); for(var z=0;z<notas.length;z++) tupF[z]=1;
+      tups.forEach(function(tp){
+        var f=tp.def?(tp.def.notes/tp.def.num):1, span=tp.def?tp.def.first:0;
+        for(var q=tp.start;q<tp.start+span;q++){ if(q<tupF.length) tupF[q]=f; }
+      });
+      var pares=notas.map(function(n){
         var dur=(''+(n.d||'q')).replace('r','');
         var conP=dur.indexOf('d')>=0;
         var base=dur.replace('d','');
@@ -10372,6 +10434,22 @@ window.DictadoVideo = (function(){
         }
         return { sn:sn, d:(n.d||'q'), rest:(n.rest||!n.k) };
       });
+      pares.forEach(function(o,i){ o.tf=tupF[i]||1; });
+      // objetos VF.Tuplet (dibujan el número del grupo y comprimen su duración)
+      pares.tuplets=[];
+      tups.forEach(function(tp){
+        var span=tp.def?tp.def.first:0; if(!span) return;
+        var slice=pares.slice(tp.start, tp.start+span);
+        if(slice.length!==span) return;
+        var allBeamed=slice.every(function(o){ var b=(''+(o.d||'')).replace('r','').replace('d',''); return !o.rest && (b==='8'||b==='16'); });
+        try{
+          pares.tuplets.push(new VF.Tuplet(slice.map(function(o){return o.sn;}), {
+            num_notes: tp.def.num, notes_occupied: tp.def.notes,
+            bracketed: !allBeamed, ratioed: false
+          }));
+        }catch(e){}
+      });
+      return pares;
     }
     for(var L=0;L<sistemas;L++){
       _LActualGP=L;
@@ -10411,7 +10489,7 @@ window.DictadoVideo = (function(){
           v.addTickables(sns);
           var bs=beamsPorPulso(pares, num, den, clef);   // fija plicas + crea beams (antes de draw)
           voces.push(v);
-          datos.push({stave:stave, voice:v, beams:bs});
+          datos.push({stave:stave, voice:v, beams:bs, tuplets:(pares.tuplets||[])});
         });
         if(voces.length){
           var fmt=new VF.Formatter();
@@ -10429,6 +10507,7 @@ window.DictadoVideo = (function(){
           datos.forEach(function(d){
             d.voice.draw(vctx, d.stave);
             d.beams.forEach(function(b){ try{ b.setContext(vctx).draw(); }catch(e){} });
+            (d.tuplets||[]).forEach(function(t){ try{ t.setContext(vctx).draw(); }catch(e){} });
           });
         }
         x+=w;
